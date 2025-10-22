@@ -1,179 +1,206 @@
-# Backend Structure Document
+# xbrl-converter-suite: Backend Structure Document
 
-This document outlines the backend architecture, hosting, and infrastructure for the **codeguide-starter** project. It uses plain language so anyone can understand how the backend is set up and how it supports the application.
+This document explains the backend setup for the xbrl-converter-suite, an XBRL financial data conversion and analytics platform. It covers architecture, databases, APIs, hosting, security, monitoring, and more, using everyday language.
 
 ## 1. Backend Architecture
 
-- **Framework and Design Pattern**
-  - We use **Next.js API Routes** to handle all server-side logic. These routes live alongside the frontend code in the same repository, making development and deployment simpler.
-  - The backend follows a **layered pattern**:
-    1. **API Layer**: Receives requests (login, registration, data fetch).  
-    2. **Service Layer**: Contains the core business logic (user validation, password hashing).  
-    3. **Data Access Layer**: Talks to the database via a simple ORM (e.g., Prisma or TypeORM).
+### Overview
+- We use Next.js 15 (App Router) on the server side. Its API Routes handle all the business logic, keeping frontend and backend neatly separated.  
+- Conversion tasks, file parsing, and XBRL generation live in server-side modules under `/lib`.  
+- Better Auth handles user authentication flows, so we don’t build that from scratch.
 
-- **Scalability**
-  - Stateless API routes can scale horizontally—new instances can spin up on demand.  
-  - We can add caching or a message queue (e.g., Redis or RabbitMQ) without changing the core code.
+### Design Patterns and Frameworks
+- **Server-centric logic:** Heavy work (file parsing, AI calls, DB queries) runs on the server. Frontend just calls simple endpoints.  
+- **Modular structure:** We group file parsers, canonical model code, and XBRL generator into clear folders, making it easy to add or swap components.  
+- **Type-safe ORM:** Drizzle ORM ties TypeScript types to your database schemas, catching mistakes at build time.
 
-- **Maintainability**
-  - Code for each feature is grouped by route (authentication, dashboard).  
-  - A service layer separates complex logic from request handling.
+### Scalability, Maintainability, Performance
+- **Scalability:** Serverless functions on Vercel (or your cloud of choice) auto-scale with demand.  
+- **Maintainability:** Clear folder structure (`/app`, `/api`, `/lib`, `/db`) means new developers find what they need quickly.  
+- **Performance:** Next.js Server Components and API Routes run close to the data, reducing latency. We can also offload heavy jobs to background queues.
 
-- **Performance**
-  - Lightweight Node.js handlers keep response times low.  
-  - Future use of database connection pooling and Redis for caching repeated queries.
+---
 
 ## 2. Database Management
 
-- **Database Choice**
-  - We recommend **PostgreSQL** for structured data and reliable transactions.  
-  - In-memory caching can be added later with **Redis** for session tokens or frequently read data.
+### Technologies Used
+- **Type:** Relational (SQL)  
+- **System:** PostgreSQL  
+- **ORM:** Drizzle ORM (TypeScript-first)
 
-- **Data Storage and Access**
-  - Use an ORM like **Prisma** or **TypeORM** to map JavaScript/TypeScript objects to database tables.
-  - Connection pooling ensures efficient use of database connections under load.
-  - Migrations track schema changes over time, keeping development, staging, and production in sync.
+### Data Structure and Access
+- We keep separate tables for users, file uploads, conversion jobs, taxonomy rules, and the canonical model data.  
+- All access goes through Drizzle’s query builder, ensuring type safety and consistency.  
+- We store large files (PDF, Excel, generated XBRL) in external blob storage (e.g., AWS S3 or Vercel Blob) and save only URLs in our DB.
 
-- **Data Practices**
-  - Passwords are never stored in plain text—they are salted and hashed with **bcrypt** before saving.
-  - All outgoing data is typed and validated to prevent malformed records.
+### Data Management Practices
+- **Migrations:** Use Drizzle migrations to evolve schema safely.  
+- **Backups:** Scheduled backups of PostgreSQL, stored off-site.  
+- **Indexes:** Add indexes on foreign keys and timestamps for fast queries (e.g., status checks).
+
+---
 
 ## 3. Database Schema
 
-### Human-Readable Format
+Here’s a human-friendly overview followed by SQL definitions.
 
-- **Users**
-  - **id**: Unique identifier  
-  - **email**: User’s email address (unique)  
-  - **password_hash**: Securely hashed password  
-  - **created_at**: Account creation timestamp
-
-- **Sessions**
-  - **id**: Unique session record  
-  - **user_id**: Links to a user  
-  - **token**: Random string for authentication  
-  - **expires_at**: When the token stops working  
-  - **created_at**: When the session was created
-
-- **DashboardItems** *(optional for dynamic data)*
-  - **id**: Unique record  
-  - **title**: Item title  
-  - **content**: Item details  
-  - **created_at**: When the item was added
+### Human-Readable Schema
+- **Users:** Stores user accounts and authentication info.  
+- **Files:** Tracks uploaded files, their status, and links to results.  
+- **Conversions:** Represents each conversion job, its input, status, and output link.  
+- **Taxonomy:** Holds financial taxonomy entries in a hierarchy (parent/child relationships).  
+- **CanonicalData:** Stores standardized financial values extracted from reports.
 
 ### SQL Schema (PostgreSQL)
 ```sql
--- Users table
+-- 1. Users table (Better Auth integration)
 CREATE TABLE users (
-  id SERIAL PRIMARY KEY,
-  email VARCHAR(255) UNIQUE NOT NULL,
-  password_hash VARCHAR(255) NOT NULL,
-  created_at TIMESTAMPTZ DEFAULT now()
+  id UUID PRIMARY KEY,
+  email TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'user',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Sessions table
-CREATE TABLE sessions (
-  id SERIAL PRIMARY KEY,
-  user_id INT REFERENCES users(id) ON DELETE CASCADE,
-  token VARCHAR(255) UNIQUE NOT NULL,
-  expires_at TIMESTAMPTZ NOT NULL,
-  created_at TIMESTAMPTZ DEFAULT now()
+-- 2. Files table
+CREATE TABLE files (
+  id UUID PRIMARY KEY,
+  user_id UUID REFERENCES users(id),
+  original_filename TEXT NOT NULL,
+  file_type TEXT NOT NULL,
+  upload_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  file_url TEXT NOT NULL
 );
 
--- Dashboard items table
-CREATE TABLE dashboard_items (
-  id SERIAL PRIMARY KEY,
-  title TEXT NOT NULL,
-  content TEXT,
-  created_at TIMESTAMPTZ DEFAULT now()
+-- 3. Conversions table
+CREATE TABLE conversions (
+  id UUID PRIMARY KEY,
+  file_id UUID REFERENCES files(id),
+  status TEXT NOT NULL,        -- e.g., 'queued', 'processing', 'done', 'error'
+  xbrl_url TEXT,              -- URL to the generated XBRL file
+  error_message TEXT,
+  started_at TIMESTAMPTZ,
+  finished_at TIMESTAMPTZ
+);
+
+-- 4. Taxonomy table
+CREATE TABLE taxonomy (
+  code TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  parent_code TEXT REFERENCES taxonomy(code),
+  sector TEXT,
+  report_type TEXT,           -- e.g., 'balance_sheet', 'cash_flow'
+  description TEXT
+);
+
+-- 5. CanonicalData table
+CREATE TABLE canonical_data (
+  id UUID PRIMARY KEY,
+  conversion_id UUID REFERENCES conversions(id),
+  taxonomy_code TEXT REFERENCES taxonomy(code),
+  value NUMERIC,
+  unit TEXT,
+  period_start DATE,
+  period_end DATE
 );
 ```  
 
+---
+
 ## 4. API Design and Endpoints
 
-- **Approach**: We follow a **RESTful** style, grouping related endpoints under `/api` directories.
+We follow a RESTful style with clear, intuitive routes.
 
-- **Key Endpoints**
-  - `POST /api/auth/register`  
-    • Accepts `{ email, password }`  
-    • Creates a new user and issues a session token  
-  - `POST /api/auth/login`  
-    • Accepts `{ email, password }`  
-    • Verifies credentials and returns a session token  
-  - `POST /api/auth/logout`  
-    • Invalidates the session token on the server  
-  - `GET /api/dashboard/data`  
-    • Requires a valid session  
-    • Returns user-specific data or dashboard items  
+### Authentication
+- `POST /api/auth/signup` – Create a new account.  
+- `POST /api/auth/login` – Log in and receive a session.  
+- `POST /api/auth/logout` – End the session.
 
-- **Communication**
-  - Frontend sends JSON requests; backend replies with JSON and appropriate HTTP status codes.  
-  - Protected routes check for a valid session token (in cookies or Authorization header).
+### Conversion Workflow
+- `POST /api/convert` – Upload a file and start conversion (returns job ID).  
+- `GET /api/convert/status/:id` – Check conversion status by job ID.  
+- `GET /api/convert/download/:id` – Download the resulting XBRL when ready.
+
+### Analytics and Taxonomy
+- `GET /api/analytics/summary` – Fetch high-level metrics and trends.  
+- `GET /api/analytics/detail` – Get detailed, filterable data points.  
+- `GET /api/taxonomy` – Retrieve taxonomy entries or a subtree.
+
+### Job Queue (Optional)
+- We can integrate a worker or microservice that polls a `conversions` table for `queued` jobs.
+
+---
 
 ## 5. Hosting Solutions
 
-- **Cloud Provider**:  
-  - **Vercel** (recommended) offers seamless Next.js deployments, auto-scaling, and built-in CDN.  
-  - Alternatively, **Netlify** or any Node.js-capable host will work.
+### Environment
+- **Development:** Docker containers for Next.js, PostgreSQL, and any microservices (e.g., AI parser).  
+- **Production:** Vercel for the Next.js app (serverless functions), AWS S3 or Vercel Blob for file storage, and a managed PostgreSQL service (e.g., AWS RDS or Supabase).
 
-- **Benefits**
-  - **Reliability**: Global servers and failover across regions.  
-  - **Scalability**: Auto-scale serverless functions based on traffic.  
-  - **Cost-Effectiveness**: Pay-per-use model means low cost for small projects.
+### Benefits
+- **Reliability:** Vercel and managed DB services handle failover and backups.  
+- **Scalability:** Serverless functions auto-scale under load. Blob storage scales infinitely.  
+- **Cost-effectiveness:** Pay-per-use for functions and storage; only run DB during active use.
+
+---
 
 ## 6. Infrastructure Components
 
-- **Load Balancer**
-  - Provided by the hosting platform—distributes API requests across function instances.
+### Load Balancing and CDN
+- Vercel’s global edge network automatically routes requests to the nearest region.  
+- Static assets and XBRL downloads served via CDN for fast delivery.
 
-- **CDN (Content Delivery Network)**
-  - Vercel’s global edge network caches static assets (CSS, JS, images) for faster page loads.
+### Caching
+- Use HTTP caching headers on analytics endpoints.  
+- Optionally add a Redis layer for hot taxonomy lookups or conversion status.
 
-- **Caching**
-  - **Redis** (optional) for session storage or caching dashboard queries to reduce database load.
+### Background Jobs
+- Inngest, Vercel Cron Jobs, or a simple polling worker can pick up queued conversions and process them asynchronously.
 
-- **Object Storage**
-  - For file uploads or backups, integrate with AWS S3 or similar services.
-
-- **Message Queue**
-  - In future, use **RabbitMQ** or **Kafka** for background tasks (e.g., email notifications).
+---
 
 ## 7. Security Measures
 
-- **Authentication & Authorization**
-  - Passwords hashed with **bcrypt** and salted.  
-  - Session tokens stored in secure, HttpOnly cookies or Authorization headers.  
-  - Protected endpoints verify tokens before proceeding.
+### Authentication & Authorization
+- **Better Auth** provides signup/login, session management, and role-based access control.  
+- API routes check user identity and ensure they only access their own files and conversions.
 
-- **Data Encryption**
-  - **HTTPS/TLS** encrypts data in transit.  
-  - Database connections use SSL to encrypt data between the app and the database.
+### Data Encryption
+- **In transit:** All endpoints served over HTTPS.  
+- **At rest:** Blob storage and PostgreSQL use built-in encryption features.
 
-- **Input Validation**
-  - Every incoming request is validated (e.g., valid email format, password length) to prevent SQL injection or other attacks.
+### Environment and Secrets
+- Store API keys, DB credentials, and service tokens in environment variables or a secrets manager (e.g., AWS Secrets Manager).
 
-- **Web Security Best Practices**
-  - Enable **CORS** policies to limit allowed origins.  
-  - Use **CSRF tokens** or same-site cookies to prevent cross-site requests.  
-  - Set secure headers with **Helmet** or a similar middleware.
+### Compliance
+- Audit logs for critical actions (file upload, conversion start/end).  
+- Data retention policies can be enforced via scheduled cleanup jobs.
+
+---
 
 ## 8. Monitoring and Maintenance
 
-- **Performance Monitoring**
-  - Integrate **Sentry** or **LogRocket** for real-time crash reporting and performance tracing.  
-  - Use Vercel’s built-in analytics to track request latencies and error rates.
+### Monitoring Tools
+- **Vercel Dashboard:** Function invocations, latencies, error rates.  
+- **Sentry or LogDNA:** Capture exceptions in API routes or worker processes.  
+- **Prometheus & Grafana (optional):** Track DB performance, queue depths, and resource usage.
 
-- **Logging**
-  - Structured logs (JSON) for all API requests and errors, shipped to a log management service like **Datadog** or **Logflare**.
+### Maintenance Strategies
+- **Automated Backups:** Regular DB dumps stored off-site.  
+- **Schema Migrations:** Drizzle migrations run as part of CI/CD.  
+- **Health Checks:** A simple `/api/health` endpoint returns service status.
+- **Dependency Updates:** Use Dependabot or Renovate to keep libraries up to date.
 
-- **Health Checks**
-  - Define a `/health` endpoint that returns a 200 status if the service is up and the database is reachable.
-
-- **Maintenance Strategies**
-  - Automated migrations run on deploy to keep the database schema up to date.  
-  - Scheduled dependency audits and security scans (e.g., `npm audit`).
-  - Regular backups of the database (daily or weekly depending on usage).
+---
 
 ## 9. Conclusion and Overall Backend Summary
 
-The backend for **codeguide-starter** is built on Next.js API Routes and Node.js, paired with PostgreSQL for data and optional Redis for caching. It follows a clear layered architecture that keeps code easy to maintain and extend. With RESTful endpoints for authentication and data, secure practices like password hashing and HTTPS, and hosting on Vercel for scalability and global performance, this setup meets the project’s goals for a fast, secure, and developer-friendly foundation. Future enhancements—such as background job queues, advanced monitoring, or richer data models—can be added without disrupting the core structure.
+The xbrl-converter-suite backend is built for clarity, scalability, and security. By combining Next.js serverless API Routes, TypeScript-first ORM, and managed cloud services, we get a system that:  
+
+- Lets users upload financial files and track conversions easily.  
+- Stores data in a well-structured PostgreSQL database with clear schemas.  
+- Scales transparently under load via serverless functions and CDN.  
+- Provides secure, role-based access to sensitive financial data.  
+- Allows easy extension with new parsers, analytics, or microservices.
+
+This setup aligns perfectly with the project’s goal: a reliable, maintainable platform for converting and analyzing financial reports in XBRL format. Any developer or stakeholder can read this document and understand how to run, extend, and maintain the system without ambiguity.
