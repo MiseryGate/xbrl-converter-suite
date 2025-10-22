@@ -1,14 +1,20 @@
 flowchart TD
-  Start[Landing Page]
-  SignUpPage[Sign Up Page]
-  SignInPage[Sign In Page]
-  AuthAPI[Authentication API Endpoint]
-  DashboardPage[Dashboard Page]
-  Start -->|Select Sign Up| SignUpPage
-  Start -->|Select Sign In| SignInPage
-  SignUpPage -->|Submit Credentials| AuthAPI
-  SignInPage -->|Submit Credentials| AuthAPI
-  AuthAPI -->|Success| DashboardPage
-  AuthAPI -->|Error| SignUpPage
-  AuthAPI -->|Error| SignInPage
-  DashboardPage -->|Click Logout| Start
+  Start[Start] --> Auth[User Authentication]
+  Auth --> Dashboard[Dashboard]
+  Dashboard --> Convert[Convert Documents]
+  Dashboard --> Analytics[View Analytics]
+  Convert --> Upload[Upload Source File]
+  Upload --> APIConvert[API Convert Route]
+  APIConvert --> SaveMeta[Save File Metadata]
+  SaveMeta --> Parser[Parsing Module]
+  Parser --> Canonical[Canonical Model Transformation]
+  Canonical --> Taxonomy[Taxonomy Mapping]
+  Taxonomy --> Generate[XBRL Generation]
+  Generate --> Store[Store XBRL Output]
+  Store --> UpdateDB[Update DB with Result]
+  UpdateDB --> History[Conversion History]
+  History --> Download[Download XBRL File]
+  Analytics --> APIAnalytics[API Analytics Route]
+  APIAnalytics --> QueryDB[Query Aggregated Data]
+  QueryDB --> Calculate[Calculate Analytics Metrics]
+  Calculate --> Display[Display Charts]
